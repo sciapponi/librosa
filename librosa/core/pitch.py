@@ -402,6 +402,7 @@ def _cumulative_mean_normalized_difference(
     )
     energy_frames[np.abs(energy_frames) < 1e-6] = 0
 
+    energy_frames_0 = energy_frames[:, 0, :]
     # Difference function.
     yin_frames = energy_frames[..., :1, :] + energy_frames - 2 * acf_frames
 
@@ -411,7 +412,7 @@ def _cumulative_mean_normalized_difference(
     tau_range = util.expand_to(
         np.arange(1, max_period + 1), ndim=yin_frames.ndim, axes=-2
     )
-
+ 
     cumulative_mean = (
         np.cumsum(yin_frames[..., 1 : max_period + 1, :], axis=-2) / tau_range
     )
@@ -419,7 +420,8 @@ def _cumulative_mean_normalized_difference(
     yin_frames: np.ndarray = yin_numerator / (
         yin_denominator + util.tiny(yin_denominator)
     )
-    return yin_frames
+
+    return yin_frames, energy_frames_0
 
 
 @numba.stencil  # type: ignore
@@ -568,6 +570,7 @@ def yin(
     array([442.66354675, 441.95299983, 441.58010963, ...,
         871.161732  , 873.99001454, 877.04297681])
     """
+
     if fmin is None or fmax is None:
         raise ParameterError('both "fmin" and "fmax" must be provided')
 
@@ -600,7 +603,7 @@ def yin(
     max_period = min(int(np.ceil(sr / fmin)), frame_length - win_length - 1)
 
     # Calculate cumulative mean normalized difference function.
-    yin_frames = _cumulative_mean_normalized_difference(
+    yin_frames, energy_frames_0 = _cumulative_mean_normalized_difference(
         y_frames, frame_length, win_length, min_period, max_period
     )
 
@@ -609,6 +612,7 @@ def yin(
 
     # Find local minima.
     is_trough = util.localmin(yin_frames, axis=-2)
+
     is_trough[..., 0, :] = yin_frames[..., 0, :] < yin_frames[..., 1, :]
 
     # Find minima below peak threshold.
@@ -622,12 +626,17 @@ def yin(
     target_shape[-2] = 1
 
     global_min = np.argmin(yin_frames, axis=-2)
+
     yin_period = np.argmax(is_threshold_trough, axis=-2)
 
     global_min = global_min.reshape(target_shape)
     yin_period = yin_period.reshape(target_shape)
 
-    no_trough_below_threshold = np.all(~is_threshold_trough, axis=-2, keepdims=True)
+    # APERIODIC?
+    no_trough_below_threshold = np.all(~is_threshold_trough, axis=-2, keepdims=True) 
+    aperiodic = no_trough_below_threshold.astype(int).squeeze(0)
+
+
     yin_period[no_trough_below_threshold] = global_min[no_trough_below_threshold]
 
     # Refine peak by parabolic interpolation.
@@ -640,7 +649,7 @@ def yin(
 
     # Convert period to fundamental frequency.
     f0: np.ndarray = sr / yin_period
-    return f0
+    return f0, yin_period, aperiodic, energy_frames_0
 
 
 def pyin(
